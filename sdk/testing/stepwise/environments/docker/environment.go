@@ -44,7 +44,7 @@ import (
 	uuid "github.com/hashicorp/go-uuid"
 )
 
-var _ stepwise.StepwiseEnvironment = &DockerCluster{}
+var _ stepwise.Environment = &DockerCluster{}
 
 // DockerCluster is used to managing the lifecycle of the test Vault cluster
 type DockerCluster struct {
@@ -53,9 +53,9 @@ type DockerCluster struct {
 	// ClusterName is a UUID name of the cluster. Docker ID?
 	CluterName string
 
-	// EnvOptions are a set of options from the Stepwise test using this
+	// MountOptions are a set of options from the Stepwise test using this
 	// cluster
-	EnvOptions stepwise.EnvironmentOptions
+	MountOptions stepwise.MountOptions
 
 	RaftStorage        bool
 	ClientAuthRequired bool
@@ -118,12 +118,12 @@ func (dc *DockerCluster) MountPath() string {
 		panic(err)
 	}
 	prefix := dc.PluginName
-	if dc.EnvOptions.MountPathPrefix != "" {
-		prefix = dc.EnvOptions.MountPathPrefix
+	if dc.MountOptions.MountPathPrefix != "" {
+		prefix = dc.MountOptions.MountPathPrefix
 	}
 
 	dc.mountPath = fmt.Sprintf("%s_%s", prefix, uuidStr)
-	if dc.EnvOptions.PluginType == stepwise.PluginTypeCredential {
+	if dc.MountOptions.PluginType == stepwise.PluginTypeCredential {
 		dc.mountPath = fmt.Sprintf("%s/%s", "auth", dc.mountPath)
 	}
 
@@ -530,7 +530,7 @@ func (n *DockerClusterNode) setupCert() error {
 	}
 
 	certGetter := reloadutil.NewCertificateGetter(n.ServerCertPEMFile, n.ServerKeyPEMFile, "")
-	if err := certGetter.Reload(nil); err != nil {
+	if err := certGetter.Reload(); err != nil {
 		// TODO error handle or panic?
 		panic(err)
 	}
@@ -907,8 +907,8 @@ func createNetwork(cli *docker.Client, netName, cidr string) (string, error) {
 	return resp.ID, nil
 }
 
-// NewDockerEnvironment creats a new Stepwise Environment for executing tests
-func NewDockerEnvironment(name string, do *stepwise.EnvironmentOptions) *DockerCluster {
+// NewEnvironment creats a new Stepwise Environment for executing tests
+func NewEnvironment(name string, do *stepwise.MountOptions) *DockerCluster {
 	// TODO name here should be name of the test?
 	clusterUUID, err := uuid.GenerateUUID()
 	if err != nil {
@@ -917,22 +917,21 @@ func NewDockerEnvironment(name string, do *stepwise.EnvironmentOptions) *DockerC
 
 	if do == nil {
 		// set empty values
-		do = &stepwise.EnvironmentOptions{}
+		do = &stepwise.MountOptions{}
 	}
 	return &DockerCluster{
-		PluginName:  do.PluginName,
-		ClusterName: fmt.Sprintf("test-%s-%s", name, clusterUUID),
-		RaftStorage: true,
-		EnvOptions:  *do,
+		PluginName:   do.PluginName,
+		ClusterName:  fmt.Sprintf("test-%s-%s", name, clusterUUID),
+		RaftStorage:  true,
+		MountOptions: *do,
 	}
 }
 
 // Setup creates any temp dir and compiles the binary for copying to Docker
 func (dc *DockerCluster) Setup() error {
-	// TODO many not use name here
-	name := dc.EnvOptions.Name
+	registryName := dc.MountOptions.RegistryName
 	// TODO make PluginName give random name with prefix if given
-	pluginName := dc.EnvOptions.PluginName
+	pluginName := dc.MountOptions.PluginName
 	// get the working directory of the plugin being tested.
 	srcDir, err := os.Getwd()
 	if err != nil {
@@ -945,7 +944,7 @@ func (dc *DockerCluster) Setup() error {
 		return err
 	}
 
-	binName, binPath, sha256value, err := stepwise.CompilePlugin(name, pluginName, srcDir, tmpDir)
+	binName, binPath, sha256value, err := stepwise.CompilePlugin(registryName, pluginName, srcDir, tmpDir)
 	if err != nil {
 		return err
 	}
@@ -964,8 +963,8 @@ func (dc *DockerCluster) Setup() error {
 
 	// use client to mount plugin
 	err = client.Sys().RegisterPlugin(&api.RegisterPluginInput{
-		Name:    name,
-		Type:    consts.PluginType(dc.EnvOptions.PluginType),
+		Name:    registryName,
+		Type:    consts.PluginType(dc.MountOptions.PluginType),
 		Command: binName,
 		SHA256:  sha256value,
 	})
@@ -973,23 +972,23 @@ func (dc *DockerCluster) Setup() error {
 		return err
 	}
 
-	switch dc.EnvOptions.PluginType {
+	switch dc.MountOptions.PluginType {
 	case stepwise.PluginTypeCredential:
 		// the mount path includes "auth/" for credential type plugins. For enabling
 		// auth mounts via the /sys endpoint, we need to remove that prefix
 		authPath := strings.TrimPrefix(dc.MountPath(), "auth/")
 		err = client.Sys().EnableAuthWithOptions(authPath, &api.EnableAuthOptions{
-			Type: name,
+			Type: registryName,
 		})
 	case stepwise.PluginTypeDatabase:
 		// TODO database type
 		return errors.New("plugin type database not yet supported")
 	case stepwise.PluginTypeSecrets:
 		err = client.Sys().Mount(dc.MountPath(), &api.MountInput{
-			Type: name,
+			Type: registryName,
 		})
 	default:
-		return fmt.Errorf("unknown plugin type: %s", dc.EnvOptions.PluginType.String())
+		return fmt.Errorf("unknown plugin type: %s", dc.MountOptions.PluginType.String())
 	}
 	return err
 }
